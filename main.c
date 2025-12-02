@@ -7,7 +7,7 @@
 #include "config.h"
 #include "genetic.h"
 #include "pool.h"
-
+//baraa king
 // Global variables
 Config config;
 int shmid, semid;
