@@ -9,6 +9,7 @@ void read_config(const char *filename) {
     config.grid_z = 10;
     config.population_size = 50;
     // hi 
+    // baraa says hi
     config.num_generations = 100;
     config.max_path_length = 50;
     config.num_processes = 4;
