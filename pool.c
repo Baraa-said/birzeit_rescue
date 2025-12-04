@@ -87,20 +87,40 @@ void cleanup_shared_memory() {
     semctl(semid, 0, IPC_RMID);
 }
 
-// Worker process function
+// Worker process function - Modified for benchmark
 void worker_process(int worker_id) {
-    srand(time(NULL) + worker_id);
+    pid_t my_pid = getpid();
+    pid_t parent_pid = getppid();
+    
+    printf("  Worker %d: PID=%d, Parent=%d\n", worker_id, my_pid, parent_pid);
+    fflush(stdout);
+    
+    srand(time(NULL) + worker_id * 1000);
+    
+    int iterations = 0;
+    int last_gen = -1;
     
     while (1) {
         lock_sem();
         
-        // Check if we're done
+        // Check if we should exit
         if (shared->generation >= config.num_generations) {
             unlock_sem();
             break;
         }
         
-        // Calculate fitness for assigned paths
+        int current_gen = shared->generation;
+        
+        // Check if there's work to do
+        if (current_gen == last_gen) {
+            unlock_sem();
+            usleep(1000);  // Wait a bit before checking again
+            continue;
+        }
+        
+        last_gen = current_gen;
+        
+        // Calculate work range for this worker
         int start = worker_id * (config.population_size / config.num_processes);
         int end = (worker_id + 1) * (config.population_size / config.num_processes);
         if (worker_id == config.num_processes - 1) {
@@ -109,24 +129,35 @@ void worker_process(int worker_id) {
         
         unlock_sem();
         
-        // Evaluate fitness for assigned range
+        // Perform fitness evaluation for assigned range
         for (int i = start; i < end; i++) {
             calculate_fitness(&shared->population[i]);
         }
         
-        // Synchronization barrier
+        iterations++;
+        
+        // Signal completion
         lock_sem();
         shared->workers_done++;
         
-        // Last worker increments generation
-        if (shared->workers_done == config.num_processes) {
-            shared->workers_done = 0;
-            shared->generation++;
-        }
+        // Debug: uncomment to see worker progress
+        // if (shared->workers_done == config.num_processes) {
+        //     printf("  [All workers completed generation %d]\n", current_gen);
+        // }
+        
         unlock_sem();
         
-        // Small delay to prevent busy waiting
-        usleep(1000);
+        // Wait for all workers to complete before moving on
+        while (1) {
+            lock_sem();
+            int done = shared->workers_done;
+            unlock_sem();
+            
+            if (done >= config.num_processes) {
+                break;
+            }
+            usleep(100);
+        }
     }
     
     exit(0);
@@ -152,7 +183,11 @@ void create_process_pool(pid_t *pids) {
 
 // Wait for all workers to finish
 void wait_for_workers(pid_t *pids) {
+    printf("\nWaiting for worker processes to complete...\n");
     for (int i = 0; i < config.num_processes; i++) {
-        waitpid(pids[i], NULL, 0);
+        int status;
+        waitpid(pids[i], &status, 0);
+        printf("  Worker %d (PID=%d) finished\n", i, pids[i]);
     }
+    printf("All workers completed.\n");
 }

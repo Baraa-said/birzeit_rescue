@@ -2,22 +2,33 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include "types.h"
 #include "config.h"
 #include "genetic.h"
 #include "pool.h"
-//baraa king new new
+#include <unistd.h>
+
+
 // Global variables
 Config config;
 int shmid, semid;
 SharedData *shared;
 
-// Evolution function
-void run_evolution() {
+// Get current time in microseconds
+double get_time() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + tv.tv_usec / 1000000.0;
+}
+
+// Evolution function (shared by both modes)
+void run_evolution(int use_multiprocess) {
     int stagnation_counter = 0;
     
-    printf("Running genetic algorithm...\n\n");
+    printf("Running genetic algorithm (%s)...\n\n", 
+           use_multiprocess ? "Multi-Process" : "Single-Process");
     
     for (int gen = 0; gen < config.num_generations; gen++) {
         // Sort population by fitness
@@ -77,7 +88,11 @@ void run_evolution() {
             }
             
             mutate(&new_pop[i]);
-            calculate_fitness(&new_pop[i]);
+            
+            // Single-process: calculate fitness here
+            if (!use_multiprocess) {
+                calculate_fitness(&new_pop[i]);
+            }
         }
         
         // Replace population
@@ -86,6 +101,17 @@ void run_evolution() {
             shared->population[i] = new_pop[i];
         }
         free(new_pop);
+        
+        // Multi-process: trigger worker fitness calculation
+        if (use_multiprocess) {
+            shared->generation = gen;
+            shared->workers_done = 0;
+            
+            // Wait for all workers to complete fitness calculation
+            while (shared->workers_done < config.num_processes) {
+                usleep(100);
+            }
+        }
     }
 }
 
@@ -125,11 +151,51 @@ void display_results() {
     }
 }
 
+// Save population for second run
+void save_population(Path *backup, int size) {
+    for (int i = 0; i < size; i++) {
+        backup[i].genes = malloc(config.max_path_length * sizeof(Coord));
+        backup[i].length = shared->population[i].length;
+        memcpy(backup[i].genes, shared->population[i].genes,
+               shared->population[i].length * sizeof(Coord));
+        backup[i].fitness = shared->population[i].fitness;
+        backup[i].survivors_reached = shared->population[i].survivors_reached;
+        backup[i].coverage = shared->population[i].coverage;
+    }
+}
+
+// Restore population for second run
+void restore_population(Path *backup, int size) {
+    for (int i = 0; i < size; i++) {
+        if (shared->population[i].genes) {
+            free(shared->population[i].genes);
+        }
+        shared->population[i].genes = malloc(config.max_path_length * sizeof(Coord));
+        shared->population[i].length = backup[i].length;
+        memcpy(shared->population[i].genes, backup[i].genes,
+               backup[i].length * sizeof(Coord));
+        shared->population[i].fitness = backup[i].fitness;
+        shared->population[i].survivors_reached = backup[i].survivors_reached;
+        shared->population[i].coverage = backup[i].coverage;
+    }
+}
+
+// Free backup population
+void free_backup(Path *backup, int size) {
+    for (int i = 0; i < size; i++) {
+        if (backup[i].genes) {
+            free(backup[i].genes);
+        }
+    }
+    free(backup);
+}
+
 int main(int argc, char *argv[]) {
     const char *config_file = argc > 1 ? argv[1] : NULL;
     
-    printf("=== Genetic Algorithm Rescue Robot Path Optimizer ===\n\n");
-    //new testing
+    printf("╔══════════════════════════════════════════════════════════════╗\n");
+    printf("║  Genetic Algorithm Rescue Robot - Performance Benchmark     ║\n");
+    printf("╚══════════════════════════════════════════════════════════════╝\n\n");
     
     // Read configuration
     read_config(config_file);
@@ -146,31 +212,128 @@ int main(int argc, char *argv[]) {
     init_grid();
     
     // Generate initial population
-    printf("Generating initial population...\n");
+    printf("Generating initial population of %d paths...\n", config.population_size);
     for (int i = 0; i < config.population_size; i++) {
         generate_random_path(&shared->population[i]);
         calculate_fitness(&shared->population[i]);
     }
+    
+    // Backup initial population for fair comparison
+    Path *initial_population = malloc(config.population_size * sizeof(Path));
+    save_population(initial_population, config.population_size);
+    
+    printf("\n");
+    printf("═══════════════════════════════════════════════════════════════\n");
+    printf("                    RUN 1: SINGLE-PROCESS MODE                 \n");
+    printf("═══════════════════════════════════════════════════════════════\n\n");
+    
+    // Reset shared data
+    shared->best_fitness = -1e9;
+    shared->best_fitness_gen = 0;
+    
+    // Run single-process version
+    double start_single = get_time();
+    run_evolution(0);  // 0 = single-process
+    double end_single = get_time();
+    double time_single = end_single - start_single;
+    
+    // Save single-process results
+    float best_fitness_single = shared->population[0].fitness;
+    int survivors_single = shared->population[0].survivors_reached;
+    
+    display_results();
+    
+    printf("\n⏱️  Single-Process Time: %.3f seconds\n", time_single);
+    
+    // Restore initial population for fair comparison
+    printf("\n\nRestoring initial population for second run...\n");
+    restore_population(initial_population, config.population_size);
+    
+    printf("\n");
+    printf("═══════════════════════════════════════════════════════════════\n");
+    printf("                    RUN 2: MULTI-PROCESS MODE                  \n");
+    printf("═══════════════════════════════════════════════════════════════\n\n");
+    
+    // Reset shared data
+    shared->best_fitness = -1e9;
+    shared->best_fitness_gen = 0;
+    shared->generation = 0;
+    shared->workers_done = 0;
     
     // Create worker processes
     pid_t *pids = malloc(config.num_processes * sizeof(pid_t));
     printf("Creating %d worker processes...\n", config.num_processes);
     create_process_pool(pids);
     
-    // Run evolution
-    run_evolution();
+    // Give workers time to start
+    usleep(100000);
+    
+    printf("Worker PIDs: ");
+    for (int i = 0; i < config.num_processes; i++) {
+        printf("%d ", pids[i]);
+    }
+    printf("\n\n");
+    
+    // Run multi-process version
+    double start_multi = get_time();
+    run_evolution(1);  // 1 = multi-process
+    double end_multi = get_time();
+    double time_multi = end_multi - start_multi;
+    
+    // Save multi-process results
+    float best_fitness_multi = shared->population[0].fitness;
+    int survivors_multi = shared->population[0].survivors_reached;
+    
+    // Signal workers to stop
+    shared->generation = config.num_generations;
     
     // Wait for workers to finish
     wait_for_workers(pids);
     free(pids);
     
-    // Display results
     display_results();
     
+    printf("\n⏱️  Multi-Process Time: %.3f seconds\n", time_multi);
+    
+    // Performance comparison
+    printf("\n");
+    printf("╔══════════════════════════════════════════════════════════════╗\n");
+    printf("║                   PERFORMANCE COMPARISON                     ║\n");
+    printf("╠══════════════════════════════════════════════════════════════╣\n");
+    printf("║ Metric                │ Single-Process │ Multi-Process      ║\n");
+    printf("╠═══════════════════════╪════════════════╪════════════════════╣\n");
+    printf("║ Execution Time        │ %7.3f sec    │ %7.3f sec       ║\n", 
+           time_single, time_multi);
+    printf("║ Best Fitness          │ %10.2f     │ %10.2f         ║\n",
+           best_fitness_single, best_fitness_multi);
+    printf("║ Survivors Reached     │ %6d         │ %6d             ║\n",
+           survivors_single, survivors_multi);
+    printf("║ Processes Used        │      1         │ %6d             ║\n",
+           config.num_processes);
+    printf("╠═══════════════════════╧════════════════╧════════════════════╣\n");
+    
+    double speedup = time_single / time_multi;
+    double efficiency = (speedup / config.num_processes) * 100.0;
+    
+    printf("║ Speedup: %.2fx                                              ║\n", speedup);
+    printf("║ Parallel Efficiency: %.1f%%                                  ║\n", efficiency);
+    
+    if (speedup > 1.0) {
+        printf("║ ✅ Multi-process is %.2fx FASTER                            ║\n", speedup);
+    } else if (speedup < 1.0) {
+        printf("║ ⚠️  Single-process is %.2fx faster                          ║\n", 1.0/speedup);
+        printf("║    (Overhead may exceed benefits for this problem size)  ║\n");
+    } else {
+        printf("║ ⚖️  Both approaches have similar performance               ║\n");
+    }
+    
+    printf("╚══════════════════════════════════════════════════════════════╝\n");
+    
     // Cleanup
+    free_backup(initial_population, config.population_size);
     cleanup_shared_memory();
     
-    printf("\nOptimization complete!\n");
+    printf("\nBenchmark complete! Results saved above.\n");
     
     return 0;
 }
