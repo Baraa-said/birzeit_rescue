@@ -129,6 +129,7 @@ int main(int argc, char *argv[]) {
     const char *config_file = argc > 1 ? argv[1] : NULL;
     
     printf("=== Genetic Algorithm Rescue Robot Path Optimizer ===\n\n");
+    //new testing
     
     // Read configuration
     read_config(config_file);
