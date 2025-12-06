@@ -1,3 +1,5 @@
+// pool.c
+// to run------->(./rescue_robot)
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -7,187 +9,166 @@
 #include <sys/shm.h>
 #include <sys/sem.h>
 #include <time.h>
-#include "pool.h"
+
+#include "types.h"
+#include "config.h"
 #include "genetic.h"
+#include "pool.h"
 
-// Semaphore operations
-struct sembuf sem_lock = {0, -1, SEM_UNDO};
-struct sembuf sem_unlock = {0, 1, SEM_UNDO};
+int shmid  = -1;
+int semid  = -1;
+SharedData *shared = NULL;
 
-void lock_sem() {
-    semop(semid, &sem_lock, 1);
+// ----- semaphore helpers -----
+static struct sembuf sem_lock_op   = {0, -1, SEM_UNDO};
+static struct sembuf sem_unlock_op = {0,  1, SEM_UNDO};
+
+union semun {
+    int              val;
+    struct semid_ds *buf;
+    unsigned short  *array;
+};
+
+void lock_sem(void) {
+    if (semop(semid, &sem_lock_op, 1) == -1) {
+        perror("semop lock");
+        _exit(1);
+    }
 }
 
-void unlock_sem() {
-    semop(semid, &sem_unlock, 1);
+void unlock_sem(void) {
+    if (semop(semid, &sem_unlock_op, 1) == -1) {
+        perror("semop unlock");
+        _exit(1);
+    }
 }
 
-// Initialize shared memory
-void init_shared_memory() {
-    // Calculate shared memory size
-    int shm_size = sizeof(SharedData) + 
-                   config.population_size * sizeof(Path) +
-                   config.grid_x * config.grid_y * config.grid_z * sizeof(int) +
-                   config.num_survivors * sizeof(Coord) +
-                   config.num_obstacles * sizeof(Coord);
-    
-    // Create shared memory
+// ----- shared memory init/cleanup -----
+void init_shared_memory(void) {
+    int shm_size = sizeof(SharedData)
+        + config.population_size * sizeof(Path)
+        + config.grid_x * config.grid_y * config.grid_z * sizeof(int)
+        + config.num_survivors * sizeof(Coord)
+        + config.num_obstacles * sizeof(Coord);
+
     shmid = shmget(IPC_PRIVATE, shm_size, IPC_CREAT | 0666);
     if (shmid < 0) {
         perror("shmget");
         exit(1);
     }
-    
-    // Attach shared memory
+
     shared = (SharedData *)shmat(shmid, NULL, 0);
     if (shared == (void *)-1) {
         perror("shmat");
         exit(1);
     }
-    
-    // Set up pointers in shared memory
+
     char *ptr = (char *)shared + sizeof(SharedData);
+
     shared->population = (Path *)ptr;
     ptr += config.population_size * sizeof(Path);
+
     shared->grid = (int *)ptr;
     ptr += config.grid_x * config.grid_y * config.grid_z * sizeof(int);
+
     shared->survivors = (Coord *)ptr;
     ptr += config.num_survivors * sizeof(Coord);
+
     shared->obstacles = (Coord *)ptr;
-    
-    // Create semaphore
+
+    // semaphore
     semid = semget(IPC_PRIVATE, 1, IPC_CREAT | 0666);
     if (semid < 0) {
         perror("semget");
         exit(1);
     }
-    semctl(semid, 0, SETVAL, 1);
-    
-    // Initialize shared data
-    shared->generation = 0;
-    shared->best_fitness = -1e9;
-    shared->best_fitness_gen = 0;
-    shared->workers_done = 0;
-}
 
-// Cleanup shared memory
-void cleanup_shared_memory() {
-    // Free all path genes in population
-    for (int i = 0; i < config.population_size; i++) {
-        if (shared->population[i].genes) {
-            free(shared->population[i].genes);
-        }
+    union semun arg;
+    arg.val = 1;
+    if (semctl(semid, 0, SETVAL, arg) == -1) {
+        perror("semctl SETVAL");
+        exit(1);
     }
-    
-    // Detach and remove shared memory
-    shmdt(shared);
-    shmctl(shmid, IPC_RMID, NULL);
-    
-    // Remove semaphore
-    semctl(semid, 0, IPC_RMID);
+
+    shared->generation   = 0;
+    shared->workers_done = 0;
+    shared->best_fitness = -1e9;
 }
 
-// Worker process function - Modified for benchmark
-void worker_process(int worker_id) {
-    pid_t my_pid = getpid();
-    pid_t parent_pid = getppid();
-    
-    printf("  Worker %d: PID=%d, Parent=%d\n", worker_id, my_pid, parent_pid);
-    fflush(stdout);
-    
-    srand(time(NULL) + worker_id * 1000);
-    
-    int iterations = 0;
-    int last_gen = -1;
-    
+void cleanup_shared_memory(void) {
+    if (shared != NULL) {
+        shmdt(shared);
+        shared = NULL;
+    }
+    if (shmid != -1) {
+        shmctl(shmid, IPC_RMID, NULL);
+        shmid = -1;
+    }
+    if (semid != -1) {
+        semctl(semid, 0, IPC_RMID);
+        semid = -1;
+    }
+}
+
+// ----- worker logic -----
+static void worker_process(int worker_id) {
+    srand(time(NULL) ^ (worker_id * 7919));
+
+    int chunk = config.population_size / config.num_processes;
+    int start = worker_id * chunk;
+    int end   = (worker_id == config.num_processes - 1)
+              ? config.population_size
+              : start + chunk;
+
     while (1) {
         lock_sem();
-        
-        // Check if we should exit
-        if (shared->generation >= config.num_generations) {
+        int gen = shared->generation;
+        if (gen >= config.num_generations) {
             unlock_sem();
             break;
         }
-        
-        int current_gen = shared->generation;
-        
-        // Check if there's work to do
-        if (current_gen == last_gen) {
-            unlock_sem();
-            usleep(1000);  // Wait a bit before checking again
-            continue;
-        }
-        
-        last_gen = current_gen;
-        
-        // Calculate work range for this worker
-        int start = worker_id * (config.population_size / config.num_processes);
-        int end = (worker_id + 1) * (config.population_size / config.num_processes);
-        if (worker_id == config.num_processes - 1) {
-            end = config.population_size;
-        }
-        
         unlock_sem();
-        
-        // Perform fitness evaluation for assigned range
+
+        // احسب الفتنس لجزء هذا العامل
         for (int i = start; i < end; i++) {
             calculate_fitness(&shared->population[i]);
         }
-        
-        iterations++;
-        
-        // Signal completion
+
+        // barrier
         lock_sem();
         shared->workers_done++;
-        
-        // Debug: uncomment to see worker progress
-        // if (shared->workers_done == config.num_processes) {
-        //     printf("  [All workers completed generation %d]\n", current_gen);
-        // }
-        
-        unlock_sem();
-        
-        // Wait for all workers to complete before moving on
-        while (1) {
-            lock_sem();
-            int done = shared->workers_done;
-            unlock_sem();
-            
-            if (done >= config.num_processes) {
-                break;
-            }
-            usleep(100);
+        if (shared->workers_done == config.num_processes) {
+            shared->workers_done = 0;
+            shared->generation++;
         }
+        unlock_sem();
+
+        usleep(1000);
     }
-    
-    exit(0);
+
+    _exit(0);
 }
 
-// Create process pool
+// ----- pool creation / waiting -----
 void create_process_pool(pid_t *pids) {
     for (int i = 0; i < config.num_processes; i++) {
-        pids[i] = fork();
-        
-        if (pids[i] < 0) {
+        pid_t pid = fork();
+        if (pid < 0) {
             perror("fork");
             exit(1);
         }
-        
-        if (pids[i] == 0) {
-            // Child process
+        if (pid == 0) {
             worker_process(i);
-            // Worker process will exit when done
+        } else {
+            pids[i] = pid;
         }
     }
 }
 
-// Wait for all workers to finish
 void wait_for_workers(pid_t *pids) {
-    printf("\nWaiting for worker processes to complete...\n");
     for (int i = 0; i < config.num_processes; i++) {
-        int status;
-        waitpid(pids[i], &status, 0);
-        printf("  Worker %d (PID=%d) finished\n", i, pids[i]);
+        if (pids[i] > 0) {
+            waitpid(pids[i], NULL, 0);
+        }
     }
-    printf("All workers completed.\n");
 }

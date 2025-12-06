@@ -1,19 +1,22 @@
+// pool.h
 #ifndef POOL_H
 #define POOL_H
 
 #include <sys/types.h>
+#include "types.h"
+#include "config.h"
 
-// Semaphore operations
-void lock_sem();
-void unlock_sem();
+extern int shmid;
+extern int semid;
+extern SharedData *shared;
 
-// Shared memory management
-void init_shared_memory();
-void cleanup_shared_memory();
-
-// Process pool management
+void init_shared_memory(void);
+void cleanup_shared_memory(void);
 void create_process_pool(pid_t *pids);
 void wait_for_workers(pid_t *pids);
-void worker_process(int worker_id);
+
+// نخليهم متاحين للـ main
+void lock_sem(void);
+void unlock_sem(void);
 
 #endif
