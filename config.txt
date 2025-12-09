@@ -2,31 +2,32 @@
 # Format: parameter = value
 
 # Grid dimensions (3D space)
-grid_x = 20
-grid_y = 20
-grid_z = 10
+grid_x=10
+grid_y=10
+grid_z=3
 
 # Population and evolution parameters
-population_size = 50
-num_generations = 100
-max_path_length = 50
+population_size=12
+num_generations = 100//لازم اخليه اوتو جينراشن حسب دايمنشن الجريد
+max_path_length = 10
 stagnation_limit = 20
 
 # Multi-processing
-num_processes = 8
+num_processes = 12
 
 # Environment setup
-num_survivors = 10
-num_obstacles = 100
+num_survivors = 3
+num_obstacles = 10
 
 # Fitness function weights
 w1 = 10.0    # survivor weight
 w2 = 2.0     # coverage weight
 w3 = 0.5     # path length weight
-w4 = 5.0     # risk weight
+w4 = 4.0     # risk weight
 
 # Genetic algorithm parameters
 elitism_percent = 0.1      # Keep top 10%
 mutation_rate = 0.2        # 20% mutation probability
 crossover_rate = 0.8       # 80% crossover probability
 tournament_size = 3        # Tournament selection size
+//**********************************************************************

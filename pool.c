@@ -112,7 +112,9 @@ void cleanup_shared_memory(void) {
 
 // ----- worker logic -----
 static void worker_process(int worker_id) {
-    srand(time(NULL) ^ (worker_id * 7919));
+    srand(time(NULL) ^ (worker_id * 7919));printf("[WORKER %d] Started (PID=%d)\n", worker_id, getpid());
+fflush(stdout);
+
 
     int chunk = config.population_size / config.num_processes;
     int start = worker_id * chunk;
@@ -172,3 +174,4 @@ void wait_for_workers(pid_t *pids) {
         }
     }
 }
+//**********************************************************************

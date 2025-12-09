@@ -1,4 +1,3 @@
-// config.h
 #ifndef CONFIG_H
 #define CONFIG_H
 
@@ -19,7 +18,8 @@ typedef struct {
 
 extern Config config;
 
-void read_config(const char *filename);
+int read_config(const char *filename);
 void print_config(void);
 
 #endif
+//**********************************************************************
