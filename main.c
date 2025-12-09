@@ -26,17 +26,16 @@ int main(int argc, char *argv[]) {
     pid_t pids[config.num_processes];
     create_process_pool(pids);
 
-    // 5) مراقبة الأجيال وتحديث أفضل فتنس
+    // 5) مراقبة الأجيال وطباعة أفضل فتنس
     int last_gen = -1;
     while (1) {
         lock_sem();
-        int gen = shared->generation;
+        int gen  = shared->generation;
+        double best = shared->best_fitness;
         unlock_sem();
 
         if (gen != last_gen) {
-            update_best_solution(shared);
-            printf("Gen %3d: Best fitness = %.2f\n",
-                   gen, shared->best_fitness);
+            printf("Gen %3d: Best fitness = %.2f\n", gen, best);
             last_gen = gen;
         }
 
@@ -54,4 +53,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-//**********************************************************************

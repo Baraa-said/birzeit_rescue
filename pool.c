@@ -112,10 +112,12 @@ void cleanup_shared_memory(void) {
 
 // ----- worker logic -----
 static void worker_process(int worker_id) {
-    srand(time(NULL) ^ (worker_id * 7919));printf("[WORKER %d] Started (PID=%d)\n", worker_id, getpid());
-fflush(stdout);
+    // seed مختلف لكل عامل
+    srand(time(NULL) ^ (worker_id * 7919));
+    printf("[WORKER %d] Started (PID=%d)\n", worker_id, getpid());
+    fflush(stdout);
 
-
+    // كل عامل يشتغل على chunk من الـ population
     int chunk = config.population_size / config.num_processes;
     int start = worker_id * chunk;
     int end   = (worker_id == config.num_processes - 1)
@@ -123,33 +125,58 @@ fflush(stdout);
               : start + chunk;
 
     while (1) {
+        // 1) فحص إذا خلصنا كل الأجيال
         lock_sem();
         int gen = shared->generation;
         if (gen >= config.num_generations) {
+            // ما عاد في شغل
             unlock_sem();
             break;
         }
         unlock_sem();
 
-        // احسب الفتنس لجزء هذا العامل
+        // 2) احسب الفتنس لجزء هذا العامل
         for (int i = start; i < end; i++) {
             calculate_fitness(&shared->population[i]);
         }
 
-        // barrier
+        // 3) barrier + GA logic (آخر عامل يعمل التطور)
         lock_sem();
         shared->workers_done++;
-        if (shared->workers_done == config.num_processes) {
+        int is_last = (shared->workers_done == config.num_processes);
+
+        if (is_last) {
+            // هذا آخر عامل يخلص – مسؤول عن:
+            //  (1) reset counter
+            //  (2) update best
+            //  (3) check stagnation
+            //  (4) evolve population / أو إيقاف
             shared->workers_done = 0;
-            shared->generation++;
+
+            // حدث أفضل حل
+            update_best_solution(shared);
+
+            // فحص الستاجنيشن: لو ما تحسنش الفتنس كذا جيل – نوقف
+            if (check_stagnation()) {
+                // نختم الأجيال: هيك كل العمال رح يطلعوا من اللوب
+                shared->generation = config.num_generations;
+            } else {
+                // نطوّر السكان لجيل جديد
+                evolve_population(shared->population);
+
+                // زيدي رقم الجيل
+                shared->generation++;
+            }
         }
         unlock_sem();
 
+        // نعطي النظام شوية راحة صغيرة
         usleep(1000);
     }
 
     _exit(0);
 }
+
 
 // ----- pool creation / waiting -----
 void create_process_pool(pid_t *pids) {

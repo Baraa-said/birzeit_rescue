@@ -7,13 +7,15 @@ grid_y=10
 grid_z=3
 
 # Population and evolution parameters
-population_size=12
+population_size=13
 num_generations = 100//لازم اخليه اوتو جينراشن حسب دايمنشن الجريد
 max_path_length = 10
 stagnation_limit = 20
 
 # Multi-processing
-num_processes = 12
+num_processes = 0
+
+
 
 # Environment setup
 num_survivors = 3
