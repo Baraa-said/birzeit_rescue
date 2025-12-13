@@ -1,5 +1,5 @@
 // pool.c
-// to run------->(./rescue_robot)
+// Updated with independent worker evolution (Island Model GA)
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -23,11 +23,11 @@ SharedData *shared = NULL;
 static struct sembuf sem_lock_op   = {0, -1, SEM_UNDO};
 static struct sembuf sem_unlock_op = {0,  1, SEM_UNDO};
 
-union semun {
-    int              val;
-    struct semid_ds *buf;
-    unsigned short  *array;
-};
+// union semun {
+//     int              val;
+//     struct semid_ds *buf;
+//     unsigned short  *array;
+// };
 
 void lock_sem(void) {
     if (semop(semid, &sem_lock_op, 1) == -1) {
@@ -41,6 +41,54 @@ void unlock_sem(void) {
         perror("semop unlock");
         _exit(1);
     }
+}
+
+// ----- Data file writing -----
+void write_data_file(int snapshot_num) {
+    char filename[64];
+    sprintf(filename, "robot_data_%d.txt", snapshot_num);
+    
+    FILE *f = fopen(filename, "w");
+    if (!f) {
+        fprintf(stderr, "Error: Could not create %s\n", filename);
+        return;
+    }
+    
+    // Write grid dimensions
+    fprintf(f, "GRID: %d %d %d\n", config.grid_x, config.grid_y, config.grid_z);
+    
+    // Write best fitness
+    fprintf(f, "FITNESS: %.2f\n", shared->best_fitness);
+    
+    // Write survivors
+    fprintf(f, "SURVIVORS: %d\n", config.num_survivors);
+    for (int i = 0; i < config.num_survivors; i++) {
+        fprintf(f, "%d %d %d\n", 
+                shared->survivors[i].x,
+                shared->survivors[i].y,
+                shared->survivors[i].z);
+    }
+    
+    // Write obstacles
+    fprintf(f, "OBSTACLES: %d\n", config.num_obstacles);
+    for (int i = 0; i < config.num_obstacles; i++) {
+        fprintf(f, "%d %d %d\n",
+                shared->obstacles[i].x,
+                shared->obstacles[i].y,
+                shared->obstacles[i].z);
+    }
+    
+    // Write best path
+    fprintf(f, "PATH: %d\n", shared->best_path.length);
+    for (int i = 0; i < shared->best_path.length; i++) {
+        fprintf(f, "%d %d %d\n",
+                shared->best_path.genes[i].x,
+                shared->best_path.genes[i].y,
+                shared->best_path.genes[i].z);
+    }
+    
+    fclose(f);
+    printf("  → Snapshot %d saved to %s\n", snapshot_num, filename);
 }
 
 // ----- shared memory init/cleanup -----
@@ -110,73 +158,129 @@ void cleanup_shared_memory(void) {
     }
 }
 
-// ----- worker logic -----
+// ----- INDEPENDENT WORKER LOGIC (Island Model) -----
 static void worker_process(int worker_id) {
-    // seed مختلف لكل عامل
-    srand(time(NULL) ^ (worker_id * 7919));
-    printf("[WORKER %d] Started (PID=%d)\n", worker_id, getpid());
+    // Unique seed for each worker
+    srand(time(NULL) ^ (worker_id * 7919) ^ (getpid() << 16));
+    printf("[WORKER %d] Started (PID=%d) - Working independently\n", worker_id, getpid());
     fflush(stdout);
 
-    // كل عامل يشتغل على chunk من الـ population
-    int chunk = config.population_size / config.num_processes;
-    int start = worker_id * chunk;
-    int end   = (worker_id == config.num_processes - 1)
-              ? config.population_size
-              : start + chunk;
-
+    // Each worker manages its own sub-population
+    int sub_pop_size = config.population_size / config.num_processes;
+    if (sub_pop_size < 5) sub_pop_size = 5; // Minimum 5 individuals per worker
+    
+    // Allocate local population for this worker
+    Path *local_population = malloc(sub_pop_size * sizeof(Path));
+    if (!local_population) {
+        fprintf(stderr, "[WORKER %d] Failed to allocate local population\n", worker_id);
+        _exit(1);
+    }
+    
+    // Initialize local population independently
+    for (int i = 0; i < sub_pop_size; i++) {
+        generate_random_path(&local_population[i]);
+        calculate_fitness(&local_population[i]);
+    }
+    
+    // Track local best
+    Path local_best;
+    local_best.fitness = -1e9;
+    
+    printf("[WORKER %d] Managing %d paths independently\n", worker_id, sub_pop_size);
+    fflush(stdout);
+    
+    int generation = 0;
+    
     while (1) {
-        // 1) فحص إذا خلصنا كل الأجيال
+        // Check if we should stop
         lock_sem();
-        int gen = shared->generation;
-        if (gen >= config.num_generations) {
-            // ما عاد في شغل
+        int global_gen = shared->generation;
+        if (global_gen >= config.num_generations) {
             unlock_sem();
             break;
         }
         unlock_sem();
-
-        // 2) احسب الفتنس لجزء هذا العامل
-        for (int i = start; i < end; i++) {
-            calculate_fitness(&shared->population[i]);
-        }
-
-        // 3) barrier + GA logic (آخر عامل يعمل التطور)
-        lock_sem();
-        shared->workers_done++;
-        int is_last = (shared->workers_done == config.num_processes);
-
-        if (is_last) {
-            // هذا آخر عامل يخلص – مسؤول عن:
-            //  (1) reset counter
-            //  (2) update best
-            //  (3) check stagnation
-            //  (4) evolve population / أو إيقاف
-            shared->workers_done = 0;
-
-            // حدث أفضل حل
-            update_best_solution(shared);
-
-            // فحص الستاجنيشن: لو ما تحسنش الفتنس كذا جيل – نوقف
-            if (check_stagnation()) {
-                // نختم الأجيال: هيك كل العمال رح يطلعوا من اللوب
-                shared->generation = config.num_generations;
-            } else {
-                // نطوّر السكان لجيل جديد
-                evolve_population(shared->population);
-
-                // زيدي رقم الجيل
-                shared->generation++;
+        
+        // === INDEPENDENT EVOLUTION ===
+        // Each worker evolves its own population independently
+        
+        // 1) Find local best solution
+        for (int i = 0; i < sub_pop_size; i++) {
+            if (local_population[i].fitness > local_best.fitness) {
+                local_best = local_population[i];
             }
         }
-        unlock_sem();
-
-        // نعطي النظام شوية راحة صغيرة
-        usleep(1000);
+        
+        // 2) Evolve local population (independent genetic operations)
+        evolve_population(local_population);
+        
+        // Recalculate fitness for all individuals
+        for (int i = 0; i < sub_pop_size; i++) {
+            calculate_fitness(&local_population[i]);
+        }
+        
+        generation++;
+        
+        // === PERIODIC SYNCHRONIZATION ===
+        // Every 5 generations, workers share their best solutions
+        if (generation % 5 == 0) {
+            lock_sem();
+            
+            // Share local best with global population
+            if (local_best.fitness > shared->best_fitness) {
+                shared->best_fitness = local_best.fitness;
+                shared->best_path = local_best;
+                printf("[WORKER %d] Found new global best! Fitness: %.2f, Survivors: %d\n", 
+                       worker_id, local_best.fitness, local_best.survivors_reached);
+                fflush(stdout);
+            }
+            
+            // Worker synchronization barrier
+            shared->workers_done++;
+            int is_last = (shared->workers_done == config.num_processes);
+            
+            if (is_last) {
+                // Last worker increments generation counter
+                shared->workers_done = 0;
+                shared->generation++;
+                
+                // Optional: Implement migration (share solutions between islands)
+                // This creates diversity by exchanging best solutions
+            }
+            
+            unlock_sem();
+            
+            // Wait for all workers to sync
+            while (1) {
+                lock_sem();
+                int done = shared->workers_done;
+                unlock_sem();
+                if (done == 0) break; // All workers synced
+                usleep(100);
+            }
+        }
+        
+        // Small delay to prevent CPU thrashing
+        usleep(500);
     }
-
+    
+    // Final contribution to global solution
+    lock_sem();
+    if (local_best.fitness > shared->best_fitness) {
+        shared->best_fitness = local_best.fitness;
+        shared->best_path = local_best;
+        printf("[WORKER %d] Final best: Fitness=%.2f, Survivors=%d, Coverage=%d\n",
+               worker_id, local_best.fitness, 
+               local_best.survivors_reached, local_best.coverage);
+    }
+    unlock_sem();
+    
+    free(local_population);
+    printf("[WORKER %d] Completed evolution independently\n", worker_id);
+    fflush(stdout);
+    
     _exit(0);
 }
-
 
 // ----- pool creation / waiting -----
 void create_process_pool(pid_t *pids) {
@@ -201,4 +305,3 @@ void wait_for_workers(pid_t *pids) {
         }
     }
 }
-//**********************************************************************

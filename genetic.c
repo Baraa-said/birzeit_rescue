@@ -393,8 +393,13 @@ int compare_fitness(const void *a, const void *b) {
     return 0;
 }
 
+// FIXED: Disable stagnation check for full evolution
 int check_stagnation(void) {
-    return (stagnation_counter >= 5);
+    // Disable early stopping to allow full 100 generations for visualization
+    return 0;
+    
+    // Or use a much higher limit if you want some stagnation detection:
+    // return (stagnation_counter >= 50);
 }
 
 // بما أن genes array ثابت داخل Path، ما في free حقيقي
@@ -402,9 +407,17 @@ void free_path(Path *path) {
     (void)path;
 }
 
-// تطوير السكان (مش مربوطة لسه مع الـ pool/main، بس جاهزة لو استخدمتِها)
+// تطوير السكان - يعمل على أي population (محلي أو مشترك)
 void evolve_population(Path *population) {
-    int N = config.population_size;
+    // Get population size - use a smaller default for local populations
+    int N = config.population_size / config.num_processes;
+    if (N < 5) N = 5; // Minimum for evolution
+    
+    // Handle case where we're evolving the full shared population
+    // This happens in the original non-independent mode
+    if (population == shared->population) {
+        N = config.population_size;
+    }
 
     // رتبي حسب الفتنس
     qsort(population, N, sizeof(Path), compare_fitness);
@@ -418,15 +431,32 @@ void evolve_population(Path *population) {
         exit(1);
     }
 
-    // 1) النخبة
+    // 1) النخبة (keep best solutions)
     for (int i = 0; i < elite_count; i++) {
         new_pop[i] = population[i];
     }
 
-    // 2) أطفال
+    // 2) أطفال (create offspring through crossover and mutation)
     for (int i = elite_count; i < N; i++) {
-        int p1_idx = tournament_selection();
-        int p2_idx = tournament_selection();
+        // Select parents from current population
+        int p1_idx = rand() % N;
+        int p2_idx = rand() % N;
+        
+        // Tournament selection for better parents
+        for (int t = 1; t < TOURNAMENT_SIZE; t++) {
+            int candidate = rand() % N;
+            if (population[candidate].fitness > population[p1_idx].fitness) {
+                p1_idx = candidate;
+            }
+        }
+        
+        for (int t = 1; t < TOURNAMENT_SIZE; t++) {
+            int candidate = rand() % N;
+            if (population[candidate].fitness > population[p2_idx].fitness) {
+                p2_idx = candidate;
+            }
+        }
+        
         Path *parent1 = &population[p1_idx];
         Path *parent2 = &population[p2_idx];
 
@@ -438,7 +468,7 @@ void evolve_population(Path *population) {
         new_pop[i] = child;
     }
 
-    // 3) استبدال
+    // 3) استبدال (replace old population with new)
     for (int i = 0; i < N; i++) {
         population[i] = new_pop[i];
     }

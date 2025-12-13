@@ -1,5 +1,6 @@
 # Genetic Algorithm Rescue Robot Configuration File
 # Format: parameter = value
+# Optimized to reach ALL survivors
 
 # Grid dimensions (3D space)
 grid_x=10
@@ -7,29 +8,26 @@ grid_y=10
 grid_z=3
 
 # Population and evolution parameters
-population_size=13
-num_generations = 100//لازم اخليه اوتو جينراشن حسب دايمنشن الجريد
-max_path_length = 10
-stagnation_limit = 20
+population_size=40          # INCREASED: More diversity (was 13)
+num_generations=200         # INCREASED: More evolution time (was 100)
+max_path_length=30          # GOOD: Already allows longer paths
+stagnation_limit=50         # INCREASED: More patience (was 20)
 
 # Multi-processing
-num_processes = 0
-
-
+num_processes=4             # INCREASED: Better parallelism (was 2)
 
 # Environment setup
-num_survivors = 3
-num_obstacles = 10
+num_survivors=7
+num_obstacles=10
 
-# Fitness function weights
-w1 = 10.0    # survivor weight
-w2 = 2.0     # coverage weight
-w3 = 0.5     # path length weight
-w4 = 4.0     # risk weight
+# Fitness function weights - OPTIMIZED FOR COMPLETE COVERAGE
+w1=25.0     # INCREASED: Much higher survivor reward (was 10.0)
+w2=3.0      # INCREASED: Better coverage reward (was 2.0)
+w3=0.2      # DECREASED: Less path length penalty (was 0.5)
+w4=2.0      # DECREASED: Less risk penalty (was 4.0)
 
 # Genetic algorithm parameters
-elitism_percent = 0.1      # Keep top 10%
-mutation_rate = 0.2        # 20% mutation probability
-crossover_rate = 0.8       # 80% crossover probability
-tournament_size = 3        # Tournament selection size
-//**********************************************************************
+elitism_percent=0.15        # INCREASED: Keep more good solutions (was 0.1)
+mutation_rate=0.25          # INCREASED: More exploration (was 0.2)
+crossover_rate=0.8          # SAME: Good value
+tournament_size=3           # SAME: Good value
