@@ -10,11 +10,11 @@ grid_z=3
 # Population and evolution parameters
 population_size=40          # INCREASED: More diversity (was 13)
 num_generations=200         # INCREASED: More evolution time (was 100)
-max_path_length=30          # GOOD: Already allows longer paths
+max_path_length=100         # GOOD: Already allows longer paths
 stagnation_limit=50         # INCREASED: More patience (was 20)
 
-# Multi-processing
-num_processes=4             # INCREASED: Better parallelism (was 2)
+# Multi-processing if (0) it gets the system cores
+num_processes=0            # INCREASED: Better parallelism (was 2)
 
 # Environment setup
 num_survivors=7

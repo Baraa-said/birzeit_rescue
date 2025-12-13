@@ -52,7 +52,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_snapshots; i++) {
         printf("%d ", snapshot_generations[i]);
     }
-    printf("===\n\n");
+    printf("===\n");
+    printf("=== Watching %d workers compete independently ===\n\n", config.num_processes);
 
     // 5) Monitor generations and save snapshots
     int last_gen = -1;
@@ -62,8 +63,13 @@ int main(int argc, char *argv[]) {
         double best = shared->best_fitness;
         unlock_sem();
 
-        if (gen != last_gen) {
-            printf("Gen %3d: Best fitness = %.2f\n", gen, best);
+        if (gen != last_gen && gen > 0) {
+            // Only print main progress every 5 generations to avoid clutter
+            if (gen % 5 == 0) {
+                printf("\n═══════════════════════════════════════════════\n");
+                printf("   GLOBAL Generation %d | Best Fitness: %.2f\n", gen, best);
+                printf("═══════════════════════════════════════════════\n\n");
+            }
             last_gen = gen;
             
             // Check if we should save a snapshot

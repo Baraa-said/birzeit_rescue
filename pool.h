@@ -24,5 +24,6 @@ void unlock_sem(void);
 
 // Data output for visualization
 void write_data_file(int snapshot_num);
+void write_worker_data_file(int worker_id, Path *worker_best);
 
 #endif // POOL_H
