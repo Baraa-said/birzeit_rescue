@@ -4,31 +4,27 @@
 #include "types.h"
 #include "config.h"
 
-// -------- Grid / Environment --------
+typedef enum {
+    START_TOP = 1,
+    START_EDGES = 2,
+    START_RANDOM = 3
+} StartMode;
+
+extern StartMode g_start_mode;
+
+// Environment
 void init_grid(void);
 int  is_valid(Coord c);
 int  get_cell(Coord c);
 int  manhattan_distance(Coord a, Coord b);
 void init_environment(int *grid, Coord *survivors, Coord *obstacles);
 
-// -------- Population & Fitness --------
+// GA
 void init_population(Path *population);
-void calculate_fitness(Path *path);
-void update_best_solution(SharedData *shared);
-int  check_stagnation(void);
-void evolve_population(Path *population);
-void print_final_result(SharedData *shared);
-
-// -------- Path generation --------
 void generate_random_path(Path *path);
+void calculate_fitness(Path *path);
+void evolve_population(Path *population);
+void update_best_solution(SharedData *sd);
+void print_final_result(SharedData *sd);
 
-// -------- Genetic operators --------
-int  tournament_selection(void);
-void crossover(Path *parent1, Path *parent2, Path *child);
-void mutate(Path *path);
-
-// -------- Utilities --------
-int  compare_fitness(const void *a, const void *b);
-void free_path(Path *path);
-
-#endif // GENETIC_H
+#endif

@@ -3,7 +3,8 @@
 
 #include "config.h"
 
-#define MAX_PATH_LENGTH 50   // الحد الأقصى الثابت للجينات في المسار
+#define MAX_PATH_LENGTH 200   // raised so config.max_path_length can be > 50 safely
+
 #define EMPTY    0
 #define OBSTACLE 1
 #define SURVIVOR 2
@@ -12,28 +13,28 @@ typedef struct {
     int x, y, z;
 } Coord;
 
-// مسار = كروموسوم = سلسلة إحداثيات
 typedef struct {
-    Coord  genes[MAX_PATH_LENGTH]; // المسار كاملاً
-    int    length;                 // عدد الخطوات المستخدمة فعلياً
-    double fitness;                // قيمة الفتنس
+    Coord  genes[MAX_PATH_LENGTH];
+    int    length;
+    double fitness;
 
-    int survivors_reached;         // كم ناجي مر عليهم الروبوت
-    int coverage;                  // كم خلية مختلفة زارها الروبوت
+    int survivors_reached;  // UNIQUE survivors
+    int coverage;           // unique visited cells
 } Path;
 
-// البيانات المشتركة في الشيرد ميموري
 typedef struct {
-    Path  *population;   // array of Path (size = population_size)
-    int   *grid;         // 3D grid ممسوح على 1D
-    Coord *survivors;    // مواقع الناجين
-    Coord *obstacles;    // مواقع العوائق
+    Path  *population;
+    int   *grid;
+    Coord *survivors;
+    Coord *obstacles;
 
-    int generation;      // رقم الجيل الحالي (كم جيل *اكتمل*)
-    int workers_done;    // كم عامل خلص هذا الجيل
+    int generation;
+    int workers_done;
 
-    double best_fitness; // أفضل فتنس لحد الآن
-    Path   best_path;    // أفضل مسار لحد الآن
+    int stop_flag;          // NEW: main can stop workers early
+
+    double best_fitness;
+    Path   best_path;
 } SharedData;
 
 #endif

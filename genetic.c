@@ -4,25 +4,11 @@
 #include <limits.h>
 #include <math.h>
 #include <time.h>
+
 #include "genetic.h"
-#include "pool.h"   // عشان extern SharedData *shared
+#include "pool.h"   // extern SharedData *shared
 
-// ثوابت خاصة بالـ GA (ما لمسنا config)
-#define ELITISM_RATE     0.10   // top 10%
-#define MUTATION_RATE    0.20   // 20% احتمال ميوتشن
-#define TOURNAMENT_SIZE  3      // حجم التورنمنت
-
-// متغيرات للستاجنيشن
-static double last_best = -1e9;
-static int    stagnation_counter = 0;
-
-// لو ما عندك تعريف للـ EMPTY/OBSTACLE/SURVIVOR، تأكدي إنها موجودة في هيدر آخر
-// مثال محتمل:
-// #define EMPTY    0
-// #define OBSTACLE 1
-// #define SURVIVOR 2
-
-// ------------ Helpers ------------
+StartMode g_start_mode = START_RANDOM;
 
 static inline int index3d(int x, int y, int z) {
     return z * config.grid_x * config.grid_y + y * config.grid_x + x;
@@ -32,36 +18,28 @@ static inline int coord_to_index(Coord c) {
     return index3d(c.x, c.y, c.z);
 }
 
-// Check if coordinate is inside grid
 int is_valid(Coord c) {
     return c.x >= 0 && c.x < config.grid_x &&
            c.y >= 0 && c.y < config.grid_y &&
            c.z >= 0 && c.z < config.grid_z;
 }
 
-// Get cell type from shared grid
 int get_cell(Coord c) {
-    if (!is_valid(c)) return OBSTACLE;   // خارج الماب = عائق
+    if (!is_valid(c)) return OBSTACLE;
     return shared->grid[coord_to_index(c)];
 }
 
-// Manhattan distance
 int manhattan_distance(Coord a, Coord b) {
     return abs(a.x - b.x) + abs(a.y - b.y) + abs(a.z - b.z);
 }
 
-// ------------ Environment ------------
-
-// Initialize grid with obstacles and survivors
 void init_grid(void) {
     int grid_size = config.grid_x * config.grid_y * config.grid_z;
 
-    // امسح الجريد
-    for (int i = 0; i < grid_size; i++) {
+    for (int i = 0; i < grid_size; i++)
         shared->grid[i] = EMPTY;
-    }
 
-    // ضع العوائق (بدون شرط supporting obstacle cells)
+    // Obstacles
     for (int i = 0; i < config.num_obstacles; i++) {
         int x, y, z, idx;
         do {
@@ -71,13 +49,11 @@ void init_grid(void) {
             idx = index3d(x, y, z);
         } while (shared->grid[idx] != EMPTY);
 
-        shared->obstacles[i].x = x;
-        shared->obstacles[i].y = y;
-        shared->obstacles[i].z = z;
+        shared->obstacles[i] = (Coord){x, y, z};
         shared->grid[idx] = OBSTACLE;
     }
 
-    // ضع الناجين
+    // Survivors
     for (int i = 0; i < config.num_survivors; i++) {
         int x, y, z, idx;
         do {
@@ -87,68 +63,84 @@ void init_grid(void) {
             idx = index3d(x, y, z);
         } while (shared->grid[idx] != EMPTY);
 
-        shared->survivors[i].x = x;
-        shared->survivors[i].y = y;
-        shared->survivors[i].z = z;
+        shared->survivors[i] = (Coord){x, y, z};
         shared->grid[idx] = SURVIVOR;
     }
 }
 
-// الدكتور حاط init_environment في الهيدر – نخليها تستدعي init_grid
 void init_environment(int *grid, Coord *survivors, Coord *obstacles) {
-    (void)grid;
-    (void)survivors;
-    (void)obstacles;
+    (void)grid; (void)survivors; (void)obstacles;
     init_grid();
 }
 
-// ------------ Path & Population ------------
+static int is_edge_cell(Coord c) {
+    return (c.x == 0 || c.x == config.grid_x - 1 ||
+            c.y == 0 || c.y == config.grid_y - 1 ||
+            c.z == 0 || c.z == config.grid_z - 1);
+}
 
-// توليد مسار عشوائي مع ميول باتجاه أقرب ناجي (A*-like)
+static Coord pick_start_coord(void) {
+    Coord c;
+
+    if (g_start_mode == START_TOP) {
+        // Top surface = z = grid_z-1
+        do {
+            c.x = rand() % config.grid_x;
+            c.y = rand() % config.grid_y;
+            c.z = config.grid_z - 1;
+        } while (get_cell(c) == OBSTACLE);
+        return c;
+    }
+
+    if (g_start_mode == START_EDGES) {
+        // Any boundary cell in 3D (edges/sides)
+        do {
+            c.x = rand() % config.grid_x;
+            c.y = rand() % config.grid_y;
+            c.z = rand() % config.grid_z;
+        } while (!is_edge_cell(c) || get_cell(c) == OBSTACLE);
+        return c;
+    }
+
+    // Random
+    do {
+        c.x = rand() % config.grid_x;
+        c.y = rand() % config.grid_y;
+        c.z = rand() % config.grid_z;
+    } while (get_cell(c) == OBSTACLE);
+    return c;
+}
+
 void generate_random_path(Path *path) {
     int max_len = config.max_path_length;
-    if (max_len > MAX_PATH_LENGTH) {
-        max_len = MAX_PATH_LENGTH; // أمان
-    }
+    if (max_len > MAX_PATH_LENGTH) max_len = MAX_PATH_LENGTH;
 
     path->length = 0;
     path->fitness = 0.0;
     path->survivors_reached = 0;
     path->coverage = 0;
 
-    // بداية من خلية مش عائق
-    Coord current;
-    do {
-        current.x = rand() % config.grid_x;
-        current.y = rand() % config.grid_y;
-        current.z = rand() % config.grid_z;
-    } while (get_cell(current) == OBSTACLE);
-
+    Coord current = pick_start_coord();
     path->genes[path->length++] = current;
+
+    Coord directions[6] = {
+        { 1,  0,  0}, {-1,  0,  0},
+        { 0,  1,  0}, { 0, -1,  0},
+        { 0,  0,  1}, { 0,  0, -1}
+    };
 
     for (int step = 1; step < max_len; step++) {
         Coord next = current;
 
-        // 70% نتحرك باتجاه أقرب ناجي
-        if (rand() % 100 < 70 && config.num_survivors > 0) {
+        // 70% guided move toward nearest survivor (simple heuristic)
+        if ((rand() % 100) < 70 && config.num_survivors > 0) {
             int min_dist = INT_MAX;
             Coord best = current;
 
-            Coord directions[6] = {
-                { 1,  0,  0},
-                {-1,  0,  0},
-                { 0,  1,  0},
-                { 0, -1,  0},
-                { 0,  0,  1},
-                { 0,  0, -1}
-            };
-
             for (int d = 0; d < 6; d++) {
-                Coord cand = {
-                    current.x + directions[d].x,
-                    current.y + directions[d].y,
-                    current.z + directions[d].z
-                };
+                Coord cand = { current.x + directions[d].x,
+                               current.y + directions[d].y,
+                               current.z + directions[d].z };
 
                 if (!is_valid(cand) || get_cell(cand) == OBSTACLE) continue;
 
@@ -164,30 +156,19 @@ void generate_random_path(Path *path) {
                 }
             }
 
-            if (min_dist == INT_MAX) {
-                break; // ما في حركة مفيدة
-            }
+            if (min_dist == INT_MAX) break;
             next = best;
         } else {
-            // حركة عشوائية مع حد أعلى للمحاولات
+            // random step with limited attempts
             int attempts = 0;
             Coord cand;
             do {
                 int dir = rand() % 6;
-                cand = current;
-                switch (dir) {
-                    case 0: cand.x++; break;
-                    case 1: cand.x--; break;
-                    case 2: cand.y++; break;
-                    case 3: cand.y--; break;
-                    case 4: cand.z++; break;
-                    case 5: cand.z--; break;
-                }
+                cand = (Coord){ current.x + directions[dir].x,
+                                current.y + directions[dir].y,
+                                current.z + directions[dir].z };
                 attempts++;
-                if (attempts > 10) {
-                    cand = current;
-                    break;
-                }
+                if (attempts > 10) { cand = current; break; }
             } while (!is_valid(cand) || get_cell(cand) == OBSTACLE);
 
             if (attempts > 10) break;
@@ -199,82 +180,72 @@ void generate_random_path(Path *path) {
     }
 }
 
-// تهيئة البوبيوليشن
-void init_population(Path *population) {
-    srand(time(NULL));  // seed مرة واحدة لموضوع الجيناتيك
-
-    for (int i = 0; i < config.population_size; i++) {
-        generate_random_path(&population[i]);
-        calculate_fitness(&population[i]);
-    }
-
-    shared->best_fitness = -1e9;
-    last_best = -1e9;
-    stagnation_counter = 0;
-}
-
-// ------------ Fitness ------------
-
 void calculate_fitness(Path *path) {
-    int survivors_reached = 0;
     int coverage = 0;
     int risk = 0;
 
-    int grid_size = config.grid_x * config.grid_y * config.grid_z;
-    int *visited = calloc(grid_size, sizeof(int));
-    if (!visited) {
-        fprintf(stderr, "Error: failed to allocate visited[]\n");
-        exit(1);
+    // unique survivors tracking
+    int survivors_reached = 0;
+    char *surv_hit = NULL;
+    if (config.num_survivors > 0) {
+        surv_hit = calloc((size_t)config.num_survivors, 1);
+        if (!surv_hit) { fprintf(stderr, "alloc failed\n"); exit(1); }
     }
+
+    int grid_size = config.grid_x * config.grid_y * config.grid_z;
+    int *visited = calloc((size_t)grid_size, sizeof(int));
+    if (!visited) { fprintf(stderr, "alloc failed\n"); exit(1); }
 
     for (int i = 0; i < path->length; i++) {
         Coord c = path->genes[i];
 
         if (!is_valid(c)) {
-            // خارج حدود الماب = مسار سيء جداً
             path->fitness = -1e9;
             free(visited);
+            free(surv_hit);
+            return;
+        }
+
+        if (get_cell(c) == OBSTACLE) {
+            path->fitness = -1e9;
+            free(visited);
+            free(surv_hit);
             return;
         }
 
         int idx = coord_to_index(c);
 
-        // 1) coverage: عدد الخلايا الفريدة
         if (!visited[idx]) {
             visited[idx] = 1;
             coverage++;
         }
 
-        // 2) survivors reached
+        // unique survivors
         for (int s = 0; s < config.num_survivors; s++) {
-            if (c.x == shared->survivors[s].x &&
+            if (!surv_hit[s] &&
+                c.x == shared->survivors[s].x &&
                 c.y == shared->survivors[s].y &&
                 c.z == shared->survivors[s].z) {
+                surv_hit[s] = 1;
                 survivors_reached++;
+                break;
             }
         }
 
-        // 3) collision detection
-        if (get_cell(c) == OBSTACLE) {
-            path->fitness = -1e9;
-            free(visited);
-            return;
-        }
-
-        // 4) risk: عدد الخلايا المجاورة التي فيها عوائق
+        // risk = nearby obstacles (3x3x3)
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -1; dz <= 1; dz++) {
-                    Coord neighbor = {c.x + dx, c.y + dy, c.z + dz};
-                    if (is_valid(neighbor) && get_cell(neighbor) == OBSTACLE) {
+                    Coord n = { c.x + dx, c.y + dy, c.z + dz };
+                    if (is_valid(n) && get_cell(n) == OBSTACLE)
                         risk++;
-                    }
                 }
             }
         }
     }
 
     free(visited);
+    free(surv_hit);
 
     path->survivors_reached = survivors_reached;
     path->coverage = coverage;
@@ -286,24 +257,109 @@ void calculate_fitness(Path *path) {
         config.w4 * risk;
 }
 
-// ------------ GA operators ------------
-
-// Tournament selection على shared->population
-int tournament_selection(void) {
-    int best_idx = rand() % config.population_size;
-    double best_fitness = shared->population[best_idx].fitness;
-
-    for (int i = 1; i < TOURNAMENT_SIZE; i++) {
-        int idx = rand() % config.population_size;
-        if (shared->population[idx].fitness > best_fitness) {
-            best_fitness = shared->population[idx].fitness;
-            best_idx = idx;
-        }
-    }
-    return best_idx;
+static int compare_fitness_desc(const void *a, const void *b) {
+    const Path *pa = (const Path *)a;
+    const Path *pb = (const Path *)b;
+    if (pb->fitness > pa->fitness) return 1;
+    if (pb->fitness < pa->fitness) return -1;
+    return 0;
 }
 
-// تحديث أفضل حل في shared
+static int tournament_pick(Path *population, int N) {
+    int best = rand() % N;
+    for (int i = 1; i < config.tournament_size; i++) {
+        int cand = rand() % N;
+        if (population[cand].fitness > population[best].fitness)
+            best = cand;
+    }
+    return best;
+}
+
+static void crossover(const Path *p1, const Path *p2, Path *child) {
+    int min_len = (p1->length < p2->length) ? p1->length : p2->length;
+    if (min_len <= 1) { *child = *p1; return; }
+
+    int cp = rand() % min_len;
+    child->length = 0;
+
+    for (int i = 0; i < cp && child->length < MAX_PATH_LENGTH; i++)
+        child->genes[child->length++] = p1->genes[i];
+
+    for (int i = cp; i < p2->length && child->length < MAX_PATH_LENGTH; i++)
+        child->genes[child->length++] = p2->genes[i];
+}
+
+static void mutate(Path *p) {
+    double r = (double)rand() / (double)RAND_MAX;
+    if (r > config.mutation_rate) return;
+    if (p->length < 1) return;
+
+    int mp = rand() % p->length;
+
+    Coord dirs[6] = {
+        { 1,  0,  0}, {-1,  0,  0},
+        { 0,  1,  0}, { 0, -1,  0},
+        { 0,  0,  1}, { 0,  0, -1}
+    };
+    int d = rand() % 6;
+
+    Coord nc = { p->genes[mp].x + dirs[d].x,
+                 p->genes[mp].y + dirs[d].y,
+                 p->genes[mp].z + dirs[d].z };
+
+    if (is_valid(nc) && get_cell(nc) != OBSTACLE)
+        p->genes[mp] = nc;
+}
+
+void evolve_population(Path *population) {
+    // Not used in this project version (we use evolve_population_local in workers)
+    (void)population;
+}
+
+
+void evolve_population_local(Path *population, int N) {
+    qsort(population, (size_t)N, sizeof(Path), compare_fitness_desc);
+
+    int elite = (int)(config.elitism_percent * N);
+    if (elite < 1) elite = 1;
+
+    Path *new_pop = malloc((size_t)N * sizeof(Path));
+    if (!new_pop) { fprintf(stderr, "alloc failed\n"); exit(1); }
+
+    for (int i = 0; i < elite; i++)
+        new_pop[i] = population[i];
+
+    for (int i = elite; i < N; i++) {
+        int p1 = tournament_pick(population, N);
+        int p2 = tournament_pick(population, N);
+
+        Path child;
+        double cr = (double)rand() / (double)RAND_MAX;
+
+        if (cr <= config.crossover_rate) {
+            crossover(&population[p1], &population[p2], &child);
+        } else {
+            child = population[p1];
+        }
+
+        mutate(&child);
+        calculate_fitness(&child);
+        new_pop[i] = child;
+    }
+
+    memcpy(population, new_pop, (size_t)N * sizeof(Path));
+    free(new_pop);
+}
+
+void init_population(Path *population) {
+    for (int i = 0; i < config.population_size; i++) {
+        generate_random_path(&population[i]);
+        calculate_fitness(&population[i]);
+    }
+
+    shared->best_fitness = -1e9;
+}
+
 void update_best_solution(SharedData *sd) {
     double best = sd->best_fitness;
     int best_idx = -1;
@@ -314,174 +370,16 @@ void update_best_solution(SharedData *sd) {
             best_idx = i;
         }
     }
-
     if (best_idx >= 0) {
         sd->best_fitness = best;
         sd->best_path = sd->population[best_idx];
     }
-
-    // منطق الستاجنيشن
-    if (best <= last_best + 1e-6) {
-        stagnation_counter++;
-    } else {
-        stagnation_counter = 0;
-        last_best = best;
-    }
 }
-
-// One-point crossover
-void crossover(Path *parent1, Path *parent2, Path *child) {
-    int min_len = (parent1->length < parent2->length)
-                  ? parent1->length : parent2->length;
-
-    if (min_len <= 1) {
-        *child = *parent1; // نسخة بسيطة
-        return;
-    }
-
-    int crossover_point = rand() % min_len;
-
-    *child = *parent1;                   // كبداية
-    child->length = 0;
-
-    // أول جزء من parent1
-    for (int i = 0; i < crossover_point && i < parent1->length; i++) {
-        child->genes[child->length++] = parent1->genes[i];
-    }
-
-    // ثاني جزء من parent2
-    for (int i = crossover_point;
-         i < parent2->length && child->length < MAX_PATH_LENGTH;
-         i++) {
-        child->genes[child->length++] = parent2->genes[i];
-    }
-}
-
-// Mutation: random move حول نقطة عشوائية
-void mutate(Path *path) {
-    double r = (double)rand() / RAND_MAX;
-    if (r > MUTATION_RATE) return;
-    if (path->length < 1) return;
-
-    int mutation_point = rand() % path->length;
-
-    Coord directions[6] = {
-        { 1,  0,  0}, {-1,  0,  0},
-        { 0,  1,  0}, { 0, -1,  0},
-        { 0,  0,  1}, { 0,  0, -1}
-    };
-
-    int dir = rand() % 6;
-    Coord new_coord = {
-        path->genes[mutation_point].x + directions[dir].x,
-        path->genes[mutation_point].y + directions[dir].y,
-        path->genes[mutation_point].z + directions[dir].z
-    };
-
-    if (is_valid(new_coord) && get_cell(new_coord) != OBSTACLE) {
-        path->genes[mutation_point] = new_coord;
-    }
-}
-
-// qsort: نزولاً حسب الفتنس
-int compare_fitness(const void *a, const void *b) {
-    const Path *pa = (const Path *)a;
-    const Path *pb = (const Path *)b;
-
-    if (pb->fitness > pa->fitness) return 1;
-    if (pb->fitness < pa->fitness) return -1;
-    return 0;
-}
-
-// FIXED: Disable stagnation check for full evolution
-int check_stagnation(void) {
-    // Disable early stopping to allow full 100 generations for visualization
-    return 0;
-    
-    // Or use a much higher limit if you want some stagnation detection:
-    // return (stagnation_counter >= 50);
-}
-
-// بما أن genes array ثابت داخل Path، ما في free حقيقي
-void free_path(Path *path) {
-    (void)path;
-}
-
-// تطوير السكان - يعمل على أي population (محلي أو مشترك)
-void evolve_population(Path *population) {
-    // Get population size - use a smaller default for local populations
-    int N = config.population_size / config.num_processes;
-    if (N < 5) N = 5; // Minimum for evolution
-    
-    // Handle case where we're evolving the full shared population
-    // This happens in the original non-independent mode
-    if (population == shared->population) {
-        N = config.population_size;
-    }
-
-    // رتبي حسب الفتنس
-    qsort(population, N, sizeof(Path), compare_fitness);
-
-    int elite_count = (int)(ELITISM_RATE * N);
-    if (elite_count < 1) elite_count = 1;
-
-    Path *new_pop = malloc(N * sizeof(Path));
-    if (!new_pop) {
-        fprintf(stderr, "Error: failed to allocate new population\n");
-        exit(1);
-    }
-
-    // 1) النخبة (keep best solutions)
-    for (int i = 0; i < elite_count; i++) {
-        new_pop[i] = population[i];
-    }
-
-    // 2) أطفال (create offspring through crossover and mutation)
-    for (int i = elite_count; i < N; i++) {
-        // Select parents from current population
-        int p1_idx = rand() % N;
-        int p2_idx = rand() % N;
-        
-        // Tournament selection for better parents
-        for (int t = 1; t < TOURNAMENT_SIZE; t++) {
-            int candidate = rand() % N;
-            if (population[candidate].fitness > population[p1_idx].fitness) {
-                p1_idx = candidate;
-            }
-        }
-        
-        for (int t = 1; t < TOURNAMENT_SIZE; t++) {
-            int candidate = rand() % N;
-            if (population[candidate].fitness > population[p2_idx].fitness) {
-                p2_idx = candidate;
-            }
-        }
-        
-        Path *parent1 = &population[p1_idx];
-        Path *parent2 = &population[p2_idx];
-
-        Path child;
-        crossover(parent1, parent2, &child);
-        mutate(&child);
-        calculate_fitness(&child);
-
-        new_pop[i] = child;
-    }
-
-    // 3) استبدال (replace old population with new)
-    for (int i = 0; i < N; i++) {
-        population[i] = new_pop[i];
-    }
-
-    free(new_pop);
-}
-
-// ------------ Output ------------
 
 void print_final_result(SharedData *sd) {
     printf("\n=== Final Results ===\n");
     printf("Best fitness:       %.2f\n", sd->best_fitness);
-    printf("Best path length:   %d\n",  sd->best_path.length);
-    printf("Survivors reached:  %d\n",  sd->best_path.survivors_reached);
-    printf("Coverage (cells):   %d\n",  sd->best_path.coverage);
+    printf("Best path length:   %d\n", sd->best_path.length);
+    printf("Survivors reached:  %d\n", sd->best_path.survivors_reached);
+    printf("Coverage (cells):   %d\n", sd->best_path.coverage);
 }
