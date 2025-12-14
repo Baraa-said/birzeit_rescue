@@ -1,30 +1,16 @@
-CC = gcc
-CFLAGS = -Wall -g
-LDFLAGS = -lm -pthread
-TARGET = rescue_robot
+CC=gcc
+CFLAGS=-Wall -g
+LDFLAGS=-lm -pthread
 
-SOURCES = main.c config.c genetic.c pool.c
-HEADERS = types.h config.h genetic.h pool.h
-OBJECTS = $(SOURCES:.c=.o)
+OBJS=main.o config.o genetic.o pool.o astar.o
 
-all: $(TARGET)
+all: rescue_robot
 
-$(TARGET): $(OBJECTS)
-	$(CC) $(OBJECTS) -o $(TARGET) $(LDFLAGS)
+rescue_robot: $(OBJS)
+	$(CC) $(OBJS) -o rescue_robot $(LDFLAGS)
 
-%.o: %.c $(HEADERS)
+%.o: %.c
 	$(CC) -c $< -o $@ $(CFLAGS)
 
-debug: CFLAGS += -DDEBUG
-debug: $(TARGET)
-
 clean:
-	rm -f $(TARGET) $(OBJECTS) *.o
-
-run: $(TARGET)
-	./$(TARGET) config.txt
-
-run-default: $(TARGET)
-	./$(TARGET)
-
-.PHONY: all clean run run-default debug
+	rm -f rescue_robot *.o

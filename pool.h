@@ -18,6 +18,6 @@ void lock_sem(void);
 void unlock_sem(void);
 
 void write_data_file(int snapshot_num);
-void write_worker_data_file(int worker_id, Path *worker_best);
+void write_astar_file(const char *filename, const Path *p);
 
 #endif

@@ -1,33 +1,32 @@
-# Genetic Algorithm Rescue Robot Configuration File
-# Format: parameter = value
-# Optimized to reach ALL survivors
-
-# Grid dimensions (3D space)
 grid_x=10
 grid_y=10
 grid_z=3
 
-# Population and evolution parameters
-population_size=40          # INCREASED: More diversity (was 13)
-num_generations=200         # INCREASED: More evolution time (was 100)
-max_path_length=100         # GOOD: Already allows longer paths
-stagnation_limit=50         # INCREASED: More patience (was 20)
+population_size=40
+num_generations=200
+max_path_length=100
 
-# Multi-processing if (0) it gets the system cores
-num_processes=0            # INCREASED: Better parallelism (was 2)
+num_processes=8
 
-# Environment setup
 num_survivors=7
 num_obstacles=10
 
-# Fitness function weights - OPTIMIZED FOR COMPLETE COVERAGE
-w1=25.0     # INCREASED: Much higher survivor reward (was 10.0)
-w2=3.0      # INCREASED: Better coverage reward (was 2.0)
-w3=0.2      # DECREASED: Less path length penalty (was 0.5)
-w4=2.0      # DECREASED: Less risk penalty (was 4.0)
+w1=25
+w2=3
+w3=0.2
+w4=2
 
-# Genetic algorithm parameters
-elitism_percent=0.15        # INCREASED: Keep more good solutions (was 0.1)
-mutation_rate=0.25          # INCREASED: More exploration (was 0.2)
-crossover_rate=0.8          # SAME: Good value
-tournament_size=3           # SAME: Good value
+elitism_percent=0.15
+mutation_rate=0.25
+crossover_rate=0.80
+tournament_size=3
+
+stagnation_limit=50
+time_limit_seconds=0
+
+survivor_priorities=5,4,3,2,2,1,1
+priority_default=1
+
+# NEW (to force GA to prioritize rescue)
+missing_priority_penalty=1000
+full_rescue_bonus=5000
